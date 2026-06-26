@@ -1,0 +1,10 @@
+Manifest-Version: 1.0
+Bundle-ManifestVersion: 2
+Bundle-Name: AX1
+Bundle-SymbolicName: AX1
+Bundle-Version: 1.0.0
+SAP-BundleType: ServiceInterface
+SAP-NodeType: IFLMAP
+Import-Package: 
+Provide-Capability: serviceinterface.AX1;version:Version="1.0.0"
+

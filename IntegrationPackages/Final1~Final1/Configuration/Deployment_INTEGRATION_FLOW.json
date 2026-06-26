@@ -1,0 +1,16 @@
+{
+  "PackageIntegrationFlowDeployments": {
+    "PackageName": "Final1",
+    "PackageID": "Final1",
+    "IntegrationFlows": [
+      {
+        "ArtifactID": "AY14",
+        "ArtifactName": "AY14",
+        "Deploy": "false",
+        "Rank": "100",
+        "LogLevel": "INFO",
+        "Runtimes": "iflmap"
+      }
+    ]
+  }
+}

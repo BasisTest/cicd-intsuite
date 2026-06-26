@@ -1,0 +1,23 @@
+{
+  "PackageIntegrationFlowParameters": {
+    "PackageName": "Final1",
+    "PackageID": "Final1",
+    "Artifacts": [
+      {
+        "ArtifactID": "AY14",
+        "ArtifactName": "AY14",
+        "ArtifactType": "INTEGRATION_FLOW",
+        "Parameters": [
+          {
+            "DataType": "xsd:string",
+            "Description": null,
+            "ParameterKey": "SAP_ProfileId",
+            "ParameterValues": {
+              "Default": "iflmap"
+            }
+          }
+        ]
+      }
+    ]
+  }
+}
