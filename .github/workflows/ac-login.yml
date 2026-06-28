@@ -1,64 +1,113 @@
-- name: Login to ActiveControl
-  id: ac_login
-  shell: bash
-  env:
-    AC_BASE_URL: ${{ vars.AC_BASE_URL }}
-    AC_LOGIN_ENDPOINT: ${{ vars.AC_LOGIN_ENDPOINT }}
-    AC_SYSTEM: ${{ vars.AC_SYSTEM }}
-    AC_USERNAME: ${{ secrets.AC_USERNAME }}
-    AC_PASSWORD: ${{ secrets.AC_PASSWORD }}
-  run: |
-    set -euo pipefail
+name: AC - Login Test
 
-    echo "Logging in to ActiveControl..."
-    echo "AC_BASE_URL=$AC_BASE_URL"
-    echo "AC_LOGIN_ENDPOINT=$AC_LOGIN_ENDPOINT"
-    echo "AC_SYSTEM=$AC_SYSTEM"
-    echo "Login URL=$AC_BASE_URL$AC_LOGIN_ENDPOINT"
-    echo "Username length: ${#AC_USERNAME}"
-    echo "Password length: ${#AC_PASSWORD}"
+on:
+  workflow_dispatch:
 
-    PAYLOAD=$(jq -n \
-      --arg username "$AC_USERNAME" \
-      --arg password "$AC_PASSWORD" \
-      --arg system "$AC_SYSTEM" \
-      '{
-        username: $username,
-        password: $password,
-        system: $system
-      }')
+jobs:
+  ac-login-test:
+    runs-on: ubuntu-latest
 
-    RESPONSE=$(curl -sS -w "\n%{http_code}" \
-      -X POST "$AC_BASE_URL$AC_LOGIN_ENDPOINT" \
-      -H "Accept: application/json" \
-      -H "Content-Type: application/json" \
-      -d "$PAYLOAD")
+    steps:
+      - name: Login to ActiveControl
+        id: ac_login
+        shell: bash
+        env:
+          AC_BASE_URL: ${{ vars.AC_BASE_URL }}
+          AC_LOGIN_ENDPOINT: ${{ vars.AC_LOGIN_ENDPOINT }}
+          AC_SYSTEM: ${{ vars.AC_SYSTEM }}
+          AC_USERNAME: ${{ secrets.AC_USERNAME }}
+          AC_PASSWORD: ${{ secrets.AC_PASSWORD }}
+        run: |
+          set -euo pipefail
 
-    BODY=$(echo "$RESPONSE" | sed '$d')
-    STATUS=$(echo "$RESPONSE" | tail -n1)
+          echo "Logging in to ActiveControl..."
+          echo "AC_BASE_URL=$AC_BASE_URL"
+          echo "AC_LOGIN_ENDPOINT=$AC_LOGIN_ENDPOINT"
+          echo "AC_SYSTEM=$AC_SYSTEM"
+          echo "Login URL=$AC_BASE_URL$AC_LOGIN_ENDPOINT"
+          echo "Username length: ${#AC_USERNAME}"
+          echo "Password length: ${#AC_PASSWORD}"
 
-    echo "HTTP Status: $STATUS"
+          if [[ -z "$AC_BASE_URL" ]]; then
+            echo "❌ AC_BASE_URL is empty"
+            exit 1
+          fi
 
-    if [[ "$STATUS" -lt 200 || "$STATUS" -ge 300 ]]; then
-      echo "❌ ActiveControl login failed"
-      echo "$BODY"
-      exit 1
-    fi
+          if [[ -z "$AC_LOGIN_ENDPOINT" ]]; then
+            echo "❌ AC_LOGIN_ENDPOINT is empty"
+            exit 1
+          fi
 
-    TOKEN=$(echo "$BODY" | jq -r '.access_token // empty')
+          if [[ -z "$AC_SYSTEM" ]]; then
+            echo "❌ AC_SYSTEM is empty"
+            exit 1
+          fi
 
-    if [[ -z "$TOKEN" || "$TOKEN" == "null" ]]; then
-      echo "❌ No access_token found in ActiveControl response"
-      echo "$BODY"
-      exit 1
-    fi
+          if [[ -z "$AC_USERNAME" ]]; then
+            echo "❌ AC_USERNAME is empty"
+            exit 1
+          fi
 
-    echo "::add-mask::$TOKEN"
-    echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
+          if [[ -z "$AC_PASSWORD" ]]; then
+            echo "❌ AC_PASSWORD is empty"
+            exit 1
+          fi
 
-    SYSTEM_ID=$(echo "$BODY" | jq -r '.systemId // empty')
-    SYSTEM_NAME=$(echo "$BODY" | jq -r '.systemName // empty')
+          PAYLOAD=$(jq -n \
+            --arg username "$AC_USERNAME" \
+            --arg password "$AC_PASSWORD" \
+            --arg system "$AC_SYSTEM" \
+            '{
+              username: $username,
+              password: $password,
+              system: $system
+            }')
 
-    echo "✅ ActiveControl login successful"
-    echo "System ID: $SYSTEM_ID"
-    echo "System Name: $SYSTEM_NAME"
+          echo "Payload preview without password:"
+          echo "$PAYLOAD" | jq 'del(.password)'
+
+          RESPONSE=$(curl -sS -w "\n%{http_code}" \
+            -X POST "$AC_BASE_URL$AC_LOGIN_ENDPOINT" \
+            -H "Accept: application/json" \
+            -H "Content-Type: application/json" \
+            -d "$PAYLOAD")
+
+          BODY=$(echo "$RESPONSE" | sed '$d')
+          STATUS=$(echo "$RESPONSE" | tail -n1)
+
+          echo "HTTP Status: $STATUS"
+
+          if [[ "$STATUS" -lt 200 || "$STATUS" -ge 300 ]]; then
+            echo "❌ ActiveControl login failed"
+            echo "$BODY" | jq . || echo "$BODY"
+            exit 1
+          fi
+
+          TOKEN=$(echo "$BODY" | jq -r '.access_token // empty')
+
+          if [[ -z "$TOKEN" || "$TOKEN" == "null" ]]; then
+            echo "❌ No access_token found in ActiveControl response"
+            echo "$BODY" | jq . || echo "$BODY"
+            exit 1
+          fi
+
+          echo "::add-mask::$TOKEN"
+          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
+
+          SYSTEM_ID=$(echo "$BODY" | jq -r '.systemId // empty')
+          SYSTEM_NAME=$(echo "$BODY" | jq -r '.systemName // empty')
+
+          echo "✅ ActiveControl login successful"
+          echo "System ID: $SYSTEM_ID"
+          echo "System Name: $SYSTEM_NAME"
+
+      - name: Summary
+        shell: bash
+        run: |
+          echo "## ActiveControl Login Test" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "✅ Login successful" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- AC Base URL: \`${{ vars.AC_BASE_URL }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- AC Login Endpoint: \`${{ vars.AC_LOGIN_ENDPOINT }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- AC System: \`${{ vars.AC_SYSTEM }}\`" >> "$GITHUB_STEP_SUMMARY"
