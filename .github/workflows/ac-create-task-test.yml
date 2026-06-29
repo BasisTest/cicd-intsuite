@@ -48,7 +48,7 @@ jobs:
               username: $username,
               password: $password,
               pwIsNotEncoded: true,
-              scopes: [AC, AD],
+              scopes: [],
               sessionDurationInSec: 0
             }')
 
