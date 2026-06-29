@@ -23,10 +23,32 @@ on:
         required: false
         type: string
         default: ""
+  
+  workflow_call:
+      inputs:
+        package_id:
+          required: true
+          type: string
+        source_env:
+          required: true
+          type: string
+        target_env:
+          required: true
+          type: string
+        git_commit:
+          required: true
+          type: string
+      outputs:
+        task_id:
+          description: "Created ActiveControl Business Task ID"
+          value: ${{ jobs.ac-create-task-test.outputs.task_id }}
+
 
 jobs:
   ac-create-task-test:
     runs-on: ubuntu-latest
+    outputs:
+      task_id: ${{ steps.create_task.outputs.task_id }}
 
     steps:
       - name: Login to ActiveControl
