@@ -18,6 +18,11 @@ on:
         required: true
         type: string
         default: "TST"
+      git_commit:
+        description: "Git commit SHA to correlate with ActiveControl BT"
+        required: false
+        type: string
+        default: ""
 
 jobs:
   ac-create-task-test:
@@ -83,6 +88,25 @@ jobs:
 
           echo "✅ ActiveControl login successful"
 
+      - name: Resolve correlation commit
+        id: resolve_commit
+        shell: bash
+        env:
+          INPUT_GIT_COMMIT: ${{ inputs.git_commit }}
+          FALLBACK_GIT_COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          if [[ -n "$INPUT_GIT_COMMIT" ]]; then
+            GIT_COMMIT="$INPUT_GIT_COMMIT"
+            echo "Using provided git_commit input: $GIT_COMMIT"
+          else
+            GIT_COMMIT="$FALLBACK_GIT_COMMIT"
+            echo "No git_commit input provided. Falling back to github.sha: $GIT_COMMIT"
+          fi
+
+          echo "git_commit=$GIT_COMMIT" >> "$GITHUB_OUTPUT"
+
       - name: Create ActiveControl Business Task
         id: create_task
         shell: bash
@@ -95,7 +119,7 @@ jobs:
           SOURCE_ENV: ${{ inputs.source_env }}
           TARGET_ENV: ${{ inputs.target_env }}
 
-          GIT_COMMIT: ${{ github.sha }}
+          GIT_COMMIT: ${{ steps.resolve_commit.outputs.git_commit }}
           GITHUB_RUN_ID: ${{ github.run_id }}
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
@@ -103,11 +127,17 @@ jobs:
 
           echo "Creating ActiveControl Business Task..."
           echo "Task URL=$AC_BASE_URL$AC_TASK_ENDPOINT?overrideWarning=false"
+          echo "Package    : $PACKAGE_ID"
+          echo "Source env : $SOURCE_ENV"
+          echo "Target env : $TARGET_ENV"
+          echo "Git commit : $GIT_COMMIT"
+          echo "Repository : $GITHUB_REPOSITORY"
+          echo "Run ID     : $GITHUB_RUN_ID"
 
           NOW_UTC=$(date -u +"%Y-%m-%dT%H:%M:%S.000Z")
           REFERENCE="GH-$GITHUB_RUN_ID-$PACKAGE_ID"
           CAPTION="CPI Deploy $PACKAGE_ID to $TARGET_ENV"
-          DESCRIPTION="Created from GitHub Actions. Package=$PACKAGE_ID, Source=$SOURCE_ENV, Target=$TARGET_ENV, Commit=$GIT_COMMIT, Repo=$GITHUB_REPOSITORY"
+          DESCRIPTION="Created from GitHub Actions. Package=$PACKAGE_ID, Source=$SOURCE_ENV, Target=$TARGET_ENV, Commit=$GIT_COMMIT, Repo=$GITHUB_REPOSITORY, RunId=$GITHUB_RUN_ID"
 
           TASK_PAYLOAD=$(jq -n \
             --arg caption "$CAPTION" \
@@ -277,4 +307,5 @@ jobs:
           echo "- Package: \`${{ inputs.package_id }}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- Source: \`${{ inputs.source_env }}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- Target: \`${{ inputs.target_env }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Git Commit: \`${{ steps.resolve_commit.outputs.git_commit }}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- Task ID: \`${{ steps.create_task.outputs.task_id }}\`" >> "$GITHUB_STEP_SUMMARY"
