@@ -49,7 +49,7 @@ jobs:
               username: $username,
               password: $password,
               pwIsNotEncoded: true,
-              scopes: [],
+              scopes: ["string"],
               sessionDurationInSec: 0
             }')
 
@@ -239,7 +239,8 @@ jobs:
             -X POST "$AC_BASE_URL$AC_TASK_ENDPOINT?overrideWarning=false" \
             -H "Accept: application/json" \
             -H "Content-Type: application/json" \
-            --cookie "wp-access-token=$AC_TOKEN" \
+            -H "Cookie: wp-access-token=$AC_TOKEN" \
+            -H "Authorization: Bearer $AC_TOKEN" \
             -d "$TASK_PAYLOAD")
 
           BODY=$(echo "$RESPONSE" | sed '$d')
