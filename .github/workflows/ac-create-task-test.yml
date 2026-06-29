@@ -1,0 +1,234 @@
+name: AC - Create Business Task Test
+
+on:
+  workflow_dispatch:
+    inputs:
+      package_id:
+        description: "CPI package ID"
+        required: true
+        type: string
+      source_env:
+        description: "Source environment"
+        required: true
+        type: string
+        default: "DEV"
+      target_env:
+        description: "Target environment"
+        required: true
+        type: string
+        default: "TST"
+
+jobs:
+  ac-create-task-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Login to ActiveControl
+        id: ac_login
+        shell: bash
+        env:
+          AC_BASE_URL: ${{ vars.AC_BASE_URL }}
+          AC_LOGIN_ENDPOINT: ${{ vars.AC_LOGIN_ENDPOINT }}
+          AC_SYSTEM: ${{ vars.AC_SYSTEM }}
+          AC_USERNAME: ${{ secrets.AC_USERNAME }}
+          AC_PASSWORD: ${{ secrets.AC_PASSWORD }}
+        run: |
+          set -euo pipefail
+
+          echo "Logging in to ActiveControl..."
+          echo "Login URL=$AC_BASE_URL$AC_LOGIN_ENDPOINT"
+          echo "AC_SYSTEM=$AC_SYSTEM"
+
+          LOGIN_PAYLOAD=$(jq -n \
+            --arg username "$AC_USERNAME" \
+            --arg password "$AC_PASSWORD" \
+            --arg system "$AC_SYSTEM" \
+            '{
+              system: $system,
+              username: $username,
+              password: $password,
+              pwIsNotEncoded: true,
+              scopes: [],
+              sessionDurationInSec: 0
+            }')
+
+          RESPONSE=$(curl -sS -w "\n%{http_code}" \
+            -X POST "$AC_BASE_URL$AC_LOGIN_ENDPOINT" \
+            -H "Accept: application/json" \
+            -H "Content-Type: application/json" \
+            -d "$LOGIN_PAYLOAD")
+
+          BODY=$(echo "$RESPONSE" | sed '$d')
+          STATUS=$(echo "$RESPONSE" | tail -n1)
+
+          echo "Login HTTP Status: $STATUS"
+
+          if [[ "$STATUS" -lt 200 || "$STATUS" -ge 300 ]]; then
+            echo "❌ ActiveControl login failed"
+            echo "$BODY" | jq . || echo "$BODY"
+            exit 1
+          fi
+
+          TOKEN=$(echo "$BODY" | jq -r '.access_token // empty')
+
+          if [[ -z "$TOKEN" || "$TOKEN" == "null" ]]; then
+            echo "❌ No access_token found"
+            echo "$BODY" | jq . || echo "$BODY"
+            exit 1
+          fi
+
+          echo "::add-mask::$TOKEN"
+          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
+
+          echo "✅ ActiveControl login successful"
+
+      - name: Get ActiveControl new task defaults
+        id: defaults
+        shell: bash
+        env:
+          AC_BASE_URL: ${{ vars.AC_BASE_URL }}
+          AC_TOKEN: ${{ steps.ac_login.outputs.token }}
+        run: |
+          set -euo pipefail
+
+          echo "Fetching ActiveControl new task defaults..."
+
+          RESPONSE=$(curl -sS -w "\n%{http_code}" \
+            -X GET "$AC_BASE_URL/api/newTaskDefaults" \
+            -H "Accept: application/json" \
+            -H "Cookie: wp-access-token=$AC_TOKEN")
+
+          BODY=$(echo "$RESPONSE" | sed '$d')
+          STATUS=$(echo "$RESPONSE" | tail -n1)
+
+          echo "Defaults HTTP Status: $STATUS"
+
+          if [[ "$STATUS" -lt 200 || "$STATUS" -ge 300 ]]; then
+            echo "❌ Could not fetch new task defaults"
+            echo "$BODY" | jq . || echo "$BODY"
+            exit 1
+          fi
+
+          echo "$BODY" > defaults.json
+
+          echo "✅ Defaults fetched"
+          jq '.task.tester' defaults.json
+
+      - name: Create ActiveControl Business Task
+        id: create_task
+        shell: bash
+        env:
+          AC_BASE_URL: ${{ vars.AC_BASE_URL }}
+          AC_TASK_ENDPOINT: ${{ vars.AC_TASK_ENDPOINT }}
+          AC_TOKEN: ${{ steps.ac_login.outputs.token }}
+
+          PACKAGE_ID: ${{ inputs.package_id }}
+          SOURCE_ENV: ${{ inputs.source_env }}
+          TARGET_ENV: ${{ inputs.target_env }}
+
+          GIT_COMMIT: ${{ github.sha }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+
+          # Diese Werte hast du in Swagger erfolgreich verwendet
+          AC_TASK_TYPE_ID: "10017111000000199326"
+          AC_TASK_TYPE_CAPTION: "Jira - Story"
+
+          AC_PROJECT_ID: "10015120400000148142"
+          AC_PROJECT_CAPTION: "BAU - Weekly Release (Week #3)"
+
+          AC_PRIORITY_ID: "2"
+          AC_PRIORITY_CAPTION: "Normal"
+        run: |
+          set -euo pipefail
+
+          echo "Preparing task payload..."
+
+          NOW_UTC=$(date -u +"%Y-%m-%dT%H:%M:%S.000Z")
+          REFERENCE="GH-$GITHUB_RUN_ID-$PACKAGE_ID"
+          CAPTION="CPI Deploy $PACKAGE_ID to $TARGET_ENV"
+          DESCRIPTION="Created from GitHub Actions. Package=$PACKAGE_ID, Source=$SOURCE_ENV, Target=$TARGET_ENV, Commit=$GIT_COMMIT, Repo=$GITHUB_REPOSITORY"
+
+          jq \
+            --arg caption "$CAPTION" \
+            --arg reference "$REFERENCE" \
+            --arg description "$DESCRIPTION" \
+            --arg now "$NOW_UTC" \
+            --arg typeId "$AC_TASK_TYPE_ID" \
+            --arg typeCaption "$AC_TASK_TYPE_CAPTION" \
+            --arg projectId "$AC_PROJECT_ID" \
+            --arg projectCaption "$AC_PROJECT_CAPTION" \
+            --arg priorityId "$AC_PRIORITY_ID" \
+            --arg priorityCaption "$AC_PRIORITY_CAPTION" \
+            '
+            .task.id = "" |
+            .task.caption = $caption |
+            .task.reference = $reference |
+            .task.description = $description |
+            .task.creationDateTime = $now |
+
+            .task.type.typeId = $typeId |
+            .task.type.caption = $typeCaption |
+
+            .task.project.projectId = $projectId |
+            .task.project.caption = $projectCaption |
+
+            .task.priority.id = $priorityId |
+            .task.priority.caption = $priorityCaption |
+
+            .task.createdBy = .task.tester |
+
+            .task.customFields = [] |
+
+            .task.relationships = [] |
+            .task.dependencies = [] |
+
+            .users = [] |
+            .attachments = []
+            ' defaults.json > create-task.json
+
+          echo "Create task payload:"
+          jq . create-task.json
+
+          RESPONSE=$(curl -sS -w "\n%{http_code}" \
+            -X POST "$AC_BASE_URL$AC_TASK_ENDPOINT?overrideWarning=false" \
+            -H "Accept: application/json" \
+            -H "Content-Type: application/json" \
+            -H "Cookie: wp-access-token=$AC_TOKEN" \
+            -d @create-task.json)
+
+          BODY=$(echo "$RESPONSE" | sed '$d')
+          STATUS=$(echo "$RESPONSE" | tail -n1)
+
+          echo "Create Task HTTP Status: $STATUS"
+          echo "Response body:"
+          echo "$BODY" | jq . || echo "$BODY"
+
+          if [[ "$STATUS" -lt 200 || "$STATUS" -ge 300 ]]; then
+            echo "❌ ActiveControl Business Task creation failed"
+            exit 1
+          fi
+
+          TASK_ID=$(echo "$BODY" | jq -r '.taskId // empty')
+
+          if [[ -z "$TASK_ID" || "$TASK_ID" == "null" ]]; then
+            echo "⚠️ Task create call succeeded but no taskId found"
+          else
+            echo "✅ ActiveControl Business Task created"
+            echo "Task ID: $TASK_ID"
+          fi
+
+          echo "task_id=$TASK_ID" >> "$GITHUB_OUTPUT"
+
+      - name: Summary
+        shell: bash
+        run: |
+          echo "## ActiveControl Business Task Test" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "✅ ActiveControl login successful" >> "$GITHUB_STEP_SUMMARY"
+          echo "✅ Business Task create call completed" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Package: \`${{ inputs.package_id }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Source: \`${{ inputs.source_env }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Target: \`${{ inputs.target_env }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Task ID: \`${{ steps.create_task.outputs.task_id }}\`" >> "$GITHUB_STEP_SUMMARY"
