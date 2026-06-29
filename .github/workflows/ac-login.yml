@@ -1,12 +1,9 @@
 name: AC - Login Test
-
 on:
   workflow_dispatch:
-
 jobs:
   ac-login-test:
     runs-on: ubuntu-latest
-
     steps:
       - name: Login to ActiveControl
         id: ac_login
@@ -19,7 +16,6 @@ jobs:
           AC_PASSWORD: ${{ secrets.AC_PASSWORD }}
         run: |
           set -euo pipefail
-
           echo "Logging in to ActiveControl..."
           echo "AC_BASE_URL=$AC_BASE_URL"
           echo "AC_LOGIN_ENDPOINT=$AC_LOGIN_ENDPOINT"
@@ -32,35 +28,36 @@ jobs:
             echo "❌ AC_BASE_URL is empty"
             exit 1
           fi
-
           if [[ -z "$AC_LOGIN_ENDPOINT" ]]; then
             echo "❌ AC_LOGIN_ENDPOINT is empty"
             exit 1
           fi
-
           if [[ -z "$AC_SYSTEM" ]]; then
             echo "❌ AC_SYSTEM is empty"
             exit 1
           fi
-
           if [[ -z "$AC_USERNAME" ]]; then
             echo "❌ AC_USERNAME is empty"
             exit 1
           fi
-
           if [[ -z "$AC_PASSWORD" ]]; then
             echo "❌ AC_PASSWORD is empty"
             exit 1
           fi
 
+          # WICHTIG: pwIsNotEncoded/scopes/sessionDurationInSec fehlten hier vorher -
+          # genau das war die Ursache fuer den 401 AuthenticationFailed.
           PAYLOAD=$(jq -n \
             --arg username "$AC_USERNAME" \
             --arg password "$AC_PASSWORD" \
             --arg system "$AC_SYSTEM" \
             '{
+              system: $system,
               username: $username,
               password: $password,
-              system: $system
+              pwIsNotEncoded: true,
+              scopes: [],
+              sessionDurationInSec: 0
             }')
 
           echo "Payload preview without password:"
@@ -100,7 +97,6 @@ jobs:
           echo "✅ ActiveControl login successful"
           echo "System ID: $SYSTEM_ID"
           echo "System Name: $SYSTEM_NAME"
-
       - name: Summary
         shell: bash
         run: |
