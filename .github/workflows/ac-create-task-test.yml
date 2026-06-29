@@ -96,7 +96,7 @@ jobs:
           RESPONSE=$(curl -sS -w "\n%{http_code}" \
             -X GET "$AC_BASE_URL/api/newTaskDefaults" \
             -H "Accept: application/json" \
-            -H "Cookie: wp-access-token=$AC_TOKEN")
+            --cookie "wp-access-token=$AC_TOKEN")
 
           BODY=$(echo "$RESPONSE" | sed '$d')
           STATUS=$(echo "$RESPONSE" | tail -n1)
@@ -194,7 +194,7 @@ jobs:
             -X POST "$AC_BASE_URL$AC_TASK_ENDPOINT?overrideWarning=false" \
             -H "Accept: application/json" \
             -H "Content-Type: application/json" \
-            -H "Cookie: wp-access-token=$AC_TOKEN" \
+            --cookie "wp-access-token=$AC_TOKEN" \
             -d @create-task.json)
 
           BODY=$(echo "$RESPONSE" | sed '$d')
