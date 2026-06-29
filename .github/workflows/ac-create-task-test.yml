@@ -7,6 +7,7 @@ on:
         description: "CPI package ID"
         required: true
         type: string
+        default: "AY"
       source_env:
         description: "Source environment"
         required: true
@@ -82,38 +83,6 @@ jobs:
 
           echo "✅ ActiveControl login successful"
 
-      - name: Get ActiveControl new task defaults
-        id: defaults
-        shell: bash
-        env:
-          AC_BASE_URL: ${{ vars.AC_BASE_URL }}
-          AC_TOKEN: ${{ steps.ac_login.outputs.token }}
-        run: |
-          set -euo pipefail
-
-          echo "Fetching ActiveControl new task defaults..."
-
-          RESPONSE=$(curl -sS -w "\n%{http_code}" \
-            -X GET "$AC_BASE_URL/api/newTaskDefaults" \
-            -H "Accept: application/json" \
-            --cookie "wp-access-token=$AC_TOKEN")
-
-          BODY=$(echo "$RESPONSE" | sed '$d')
-          STATUS=$(echo "$RESPONSE" | tail -n1)
-
-          echo "Defaults HTTP Status: $STATUS"
-
-          if [[ "$STATUS" -lt 200 || "$STATUS" -ge 300 ]]; then
-            echo "❌ Could not fetch new task defaults"
-            echo "$BODY" | jq . || echo "$BODY"
-            exit 1
-          fi
-
-          echo "$BODY" > defaults.json
-
-          echo "✅ Defaults fetched"
-          jq '.task.tester' defaults.json
-
       - name: Create ActiveControl Business Task
         id: create_task
         shell: bash
@@ -129,73 +98,149 @@ jobs:
           GIT_COMMIT: ${{ github.sha }}
           GITHUB_RUN_ID: ${{ github.run_id }}
           GITHUB_REPOSITORY: ${{ github.repository }}
-
-          # Diese Werte hast du in Swagger erfolgreich verwendet
-          AC_TASK_TYPE_ID: "10017111000000199326"
-          AC_TASK_TYPE_CAPTION: "Jira - Story"
-
-          AC_PROJECT_ID: "10015120400000148142"
-          AC_PROJECT_CAPTION: "BAU - Weekly Release (Week #3)"
-
-          AC_PRIORITY_ID: "2"
-          AC_PRIORITY_CAPTION: "Normal"
         run: |
           set -euo pipefail
 
-          echo "Preparing task payload..."
+          echo "Creating ActiveControl Business Task..."
+          echo "Task URL=$AC_BASE_URL$AC_TASK_ENDPOINT?overrideWarning=false"
 
           NOW_UTC=$(date -u +"%Y-%m-%dT%H:%M:%S.000Z")
           REFERENCE="GH-$GITHUB_RUN_ID-$PACKAGE_ID"
           CAPTION="CPI Deploy $PACKAGE_ID to $TARGET_ENV"
           DESCRIPTION="Created from GitHub Actions. Package=$PACKAGE_ID, Source=$SOURCE_ENV, Target=$TARGET_ENV, Commit=$GIT_COMMIT, Repo=$GITHUB_REPOSITORY"
 
-          jq \
+          TASK_PAYLOAD=$(jq -n \
             --arg caption "$CAPTION" \
             --arg reference "$REFERENCE" \
             --arg description "$DESCRIPTION" \
             --arg now "$NOW_UTC" \
-            --arg typeId "$AC_TASK_TYPE_ID" \
-            --arg typeCaption "$AC_TASK_TYPE_CAPTION" \
-            --arg projectId "$AC_PROJECT_ID" \
-            --arg projectCaption "$AC_PROJECT_CAPTION" \
-            --arg priorityId "$AC_PRIORITY_ID" \
-            --arg priorityCaption "$AC_PRIORITY_CAPTION" \
-            '
-            .task.id = "" |
-            .task.caption = $caption |
-            .task.reference = $reference |
-            .task.description = $description |
-            .task.creationDateTime = $now |
-
-            .task.type.typeId = $typeId |
-            .task.type.caption = $typeCaption |
-
-            .task.project.projectId = $projectId |
-            .task.project.caption = $projectCaption |
-
-            .task.priority.id = $priorityId |
-            .task.priority.caption = $priorityCaption |
-
-            .task.createdBy = .task.tester |
-
-            .task.customFields = [] |
-
-            .task.relationships = [] |
-            .task.dependencies = [] |
-
-            .users = [] |
-            .attachments = []
-            ' defaults.json > create-task.json
+            '{
+              task: {
+                id: "",
+                caption: $caption,
+                reference: $reference,
+                group: {
+                  groupId: "",
+                  caption: ""
+                },
+                type: {
+                  typeId: "10017111000000199326",
+                  caption: "Jira - Story"
+                },
+                tester: {
+                  uname: "AYILDIRIM",
+                  fullName: "Alperen Yildirim",
+                  initials: "AY"
+                },
+                priority: {
+                  id: "2",
+                  caption: "Normal"
+                },
+                project: {
+                  projectId: "10015120400000148142",
+                  caption: "BAU - Weekly Release (Week #3)"
+                },
+                locked: false,
+                deploymentStatus: {
+                  statusId: "",
+                  caption: "",
+                  statusIsOverridden: false
+                },
+                planningStatus: {
+                  statusId: "",
+                  caption: "",
+                  statusIsOverridden: false
+                },
+                testingStatus: {
+                  id: "",
+                  caption: ""
+                },
+                ragStatuses: {
+                  statuses: [],
+                  objectCount: 0,
+                  keyCount: 0
+                },
+                creationDateTime: $now,
+                createdBy: {
+                  uname: "AYILDIRIM",
+                  fullName: "Alperen Yildirim",
+                  initials: "AY"
+                },
+                description: $description,
+                customFields: [],
+                relationships: [],
+                dependencies: []
+              },
+              taskBenefits: {
+                strategicThrust: {
+                  id: "",
+                  caption: ""
+                },
+                businessUnit: {
+                  id: "",
+                  caption: ""
+                },
+                benefitStatement: "",
+                benefitValue: 0,
+                benefitRealisationDate: "",
+                benefitOwner: {
+                  uname: "",
+                  fullName: "",
+                  initials: "",
+                  picture: "",
+                  email: "",
+                  validTo: ""
+                },
+                estEffortDays: 0,
+                estCost: 0,
+                actualEffortDays: 0,
+                actualCost: 0,
+                complexity: {
+                  id: "",
+                  caption: ""
+                },
+                area: {
+                  id: "",
+                  caption: ""
+                }
+              },
+              taskOneOff: {
+                role: {
+                  targetRoleId: "",
+                  caption: "",
+                  roleFunctionId: ""
+                },
+                oneOffDateTime: ""
+              },
+              testers: {
+                allSystemsTesters: [
+                  {
+                    tester: {
+                      uname: "AYILDIRIM",
+                      fullName: "Alperen Yildirim",
+                      initials: "AY"
+                    },
+                    systemId: "",
+                    client: "",
+                    smtpAddress: ""
+                  }
+                ],
+                specificRoleTesters: [],
+                specificTargetTesters: []
+              },
+              users: [],
+              attachments: []
+            }')
 
           echo "Create task payload:"
-          jq . create-task.json
+          echo "$TASK_PAYLOAD" | jq .
 
           RESPONSE=$(curl -sS -w "\n%{http_code}" \
             -X POST "$AC_BASE_URL$AC_TASK_ENDPOINT?overrideWarning=false" \
             -H "Accept: application/json" \
             -H "Content-Type: application/json" \
             --cookie "wp-access-token=$AC_TOKEN" \
-            -d @create-task.json)
+            -d "$TASK_PAYLOAD")
 
           BODY=$(echo "$RESPONSE" | sed '$d')
           STATUS=$(echo "$RESPONSE" | tail -n1)
