@@ -1,1 +1,6 @@
+# Dateien in dieser Liste werden beim Sync durch sync-cicd-templates.yml NICHT überschrieben.
+# Format: ein Dateiname pro Zeile (nur Dateiname, kein Pfad), # = Kommentar
+# Doku: .github/workflows/sync-cicd-templates.yml, Zeilen 443 + 582
+ 
+# Customized: ActiveControl Business Task Integration (A. Yildirim, 2026-07-01)
 btp-download-git-upload-deploy.yml
