@@ -9,7 +9,11 @@
 # 1.2.0 - 2026-05-19 - Pass enable-set-log-level from BTP_SET_LOG_LEVEL variable (O. Weng)
 # 1.3.0 - 2026-05-20 - Pass BTP_EIC_RUNTIMES and BTP_EIC_URL_TEMPLATE; merge initialize job; fix EIC vars read from TST environment via job output (O.Weng)
 # 1.6.0 - 2026-05-21 - Split single GitHub App into CICD reader (GIT_CICD_APP_ID) and consumer bot (GIT_GITHUB_APP_ID); remove GIT_GITHUB_APP_PRIVATE_KEY from reference workflow passthroughs (O.Weng)
-#
+# 1.6.1 - 2026-07-01 - ActiveControl Business Task integration: resolve-development-commit +
+#                       create-activecontrol-task vor TST-Deploy eingefügt; TST-Deploy vorerst
+#                       deaktiviert (if: false) bis AC-Callback implementiert ist.
+#                       Datei via .github/cicd-sync-exclusions.txt vom Sync ausgeschlossen.
+#                       (A. Yildirim / BasisTest)
 
 name: (Dev) BTP Download to GIT and Upload/Deploy to TST
 
@@ -96,15 +100,63 @@ jobs:
        btp-tec-user: ${{ needs.initialize.outputs.btp-tec-user }}
        btp-token-url: ${{ needs.initialize.outputs.btp-token-url }}
        btp-api-url: ${{ needs.initialize.outputs.btp-api-url }}
-       git-cicd-orgrepo: ${{ needs.initialize.outputs.git-cicd-orgrepo }} 
+       git-cicd-orgrepo: ${{ needs.initialize.outputs.git-cicd-orgrepo }}
     secrets:
        BTP_API_PASSWORD: ${{ secrets.BTP_API_PASSWORD }}
        BTP_TEC_PASSWORD: ${{ secrets.BTP_TEC_PASSWORD }}
        GIT_CICD_TOKEN: ${{ secrets.GIT_CICD_TOKEN }}
        GIT_CICD_APP_PRIVATE_KEY: ${{ secrets.GIT_CICD_APP_PRIVATE_KEY }}
 
-  read-env-vars-tst:
+  # ── CUSTOM: ActiveControl Gate ────────────────────────────────────────────────
+  # Schritt 1: development-Branch auschecken und den HEAD-SHA ermitteln.
+  # Nötig weil btp-download-btp (download-btp-to-git.yml) den Commit-SHA
+  # nicht als Workflow-Output exponiert.
+  resolve-development-commit:
     needs: [btp-download-btp]
+    name: Resolve Development Commit
+    runs-on: ${{ vars.RUNS_ON && fromJson(vars.RUNS_ON) || 'ubuntu-latest' }}
+    outputs:
+      git_commit: ${{ steps.resolve.outputs.git_commit }}
+    steps:
+      - name: Checkout development branch
+        uses: actions/checkout@v4
+        with:
+          ref: development
+          fetch-depth: 1
+
+      - name: Resolve current development commit
+        id: resolve
+        shell: bash
+        run: |
+          set -euo pipefail
+          SHA=$(git rev-parse HEAD)
+          echo "Resolved development commit: $SHA"
+          echo "git_commit=$SHA" >> "$GITHUB_OUTPUT"
+
+  # Schritt 2: ActiveControl Business Task anlegen.
+  # Enthält Login + Task-Erstellung gegen die AC REST API.
+  # git_commit kommt von resolve-development-commit (nicht github.sha!),
+  # damit der Deploy-Job später exakt den von AC geprüften Stand referenziert.
+  create-activecontrol-task:
+    needs: [resolve-development-commit]
+    name: Create ActiveControl Business Task
+    uses: ./.github/workflows/ac-create-task-test.yml
+    with:
+      package_id: ${{ inputs.id }}
+      source_env: DEV
+      target_env: TST
+      git_commit: ${{ needs.resolve-development-commit.outputs.git_commit }}
+    secrets: inherit
+  # ── END CUSTOM ────────────────────────────────────────────────────────────────
+
+  # TST-Deploy vorerst deaktiviert (if: false).
+  # Wird reaktiviert, sobald der AC-Callback (repository_dispatch ac-import-success)
+  # implementiert ist und den Deploy-Job in einem separaten Run triggert.
+  # needs umgehängt auf create-activecontrol-task damit der Job-Graph
+  # konsistent bleibt wenn der Deploy-Pfad später wieder aktiviert wird.
+  read-env-vars-tst:
+    if: ${{ false }}
+    needs: [create-activecontrol-task]
     name: Read Environment Variables for Test
     runs-on: ${{ vars.RUNS_ON && fromJson(vars.RUNS_ON) || 'ubuntu-latest' }}
     environment: TST
@@ -128,6 +180,8 @@ jobs:
           echo "btp-eic-runtimes=${{ vars.BTP_EIC_RUNTIMES }}" >> $GITHUB_OUTPUT
           echo "btp-eic-url-template=${{ vars.BTP_EIC_URL_TEMPLATE }}" >> $GITHUB_OUTPUT
 
+  # Unverändert - wird automatisch geskippt weil read-env-vars-tst (if: false)
+  # dessen needs-Vorgänger nicht als success gilt.
   btp-process-id:
     needs: [read-env-vars-tst]
     name: Process ${{ github.event.inputs.mode }}
