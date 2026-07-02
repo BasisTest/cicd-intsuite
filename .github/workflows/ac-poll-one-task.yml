@@ -1,0 +1,273 @@
+name: AC - Poll One Business Task
+
+on:
+  workflow_dispatch:
+    inputs:
+      ac_task_id:
+        description: "ActiveControl Business Task ID"
+        required: true
+        type: string
+      expected_status_id:
+        description: "Expected deploymentStatus.statusId"
+        required: true
+        type: string
+        default: "10015010200000143250"
+      trigger_deploy:
+        description: "Trigger AC Callback Deploy if status matches?"
+        required: true
+        type: choice
+        default: "false"
+        options:
+          - "false"
+          - "true"
+
+permissions:
+  contents: write
+
+jobs:
+  poll-one-activecontrol-task:
+    name: Poll One ActiveControl Business Task
+    runs-on: ${{ vars.RUNS_ON && fromJson(vars.RUNS_ON) || 'ubuntu-latest' }}
+
+    steps:
+      - name: Login to ActiveControl
+        id: ac_login
+        shell: bash
+        env:
+          AC_BASE_URL: ${{ vars.AC_BASE_URL }}
+          AC_LOGIN_ENDPOINT: ${{ vars.AC_LOGIN_ENDPOINT }}
+          AC_SYSTEM: ${{ vars.AC_SYSTEM }}
+          AC_USERNAME: ${{ secrets.AC_USERNAME }}
+          AC_PASSWORD: ${{ secrets.AC_PASSWORD }}
+        run: |
+          set -euo pipefail
+
+          echo "Logging in to ActiveControl..."
+          echo "Login URL=$AC_BASE_URL$AC_LOGIN_ENDPOINT"
+          echo "AC_SYSTEM=$AC_SYSTEM"
+
+          LOGIN_PAYLOAD=$(jq -n \
+            --arg username "$AC_USERNAME" \
+            --arg password "$AC_PASSWORD" \
+            --arg system "$AC_SYSTEM" \
+            '{
+              system: $system,
+              username: $username,
+              password: $password,
+              pwIsNotEncoded: true,
+              scopes: ["string"],
+              sessionDurationInSec: 0
+            }')
+
+          RESPONSE=$(curl -sS -w "\n%{http_code}" \
+            -X POST "$AC_BASE_URL$AC_LOGIN_ENDPOINT" \
+            -H "Accept: application/json" \
+            -H "Content-Type: application/json" \
+            -d "$LOGIN_PAYLOAD")
+
+          BODY=$(echo "$RESPONSE" | sed '$d')
+          STATUS=$(echo "$RESPONSE" | tail -n1)
+
+          echo "Login HTTP Status: $STATUS"
+
+          if [[ "$STATUS" -lt 200 || "$STATUS" -ge 300 ]]; then
+            echo "❌ ActiveControl login failed"
+            echo "$BODY" | jq . || echo "$BODY"
+            exit 1
+          fi
+
+          TOKEN=$(echo "$BODY" | jq -r '.access_token // empty')
+
+          if [[ -z "$TOKEN" || "$TOKEN" == "null" ]]; then
+            echo "❌ No access_token found"
+            echo "$BODY" | jq . || echo "$BODY"
+            exit 1
+          fi
+
+          echo "::add-mask::$TOKEN"
+          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
+
+          echo "✅ ActiveControl login successful"
+
+      - name: Read ActiveControl Business Task
+        id: read_task
+        shell: bash
+        env:
+          AC_BASE_URL: ${{ vars.AC_BASE_URL }}
+          AC_TOKEN: ${{ steps.ac_login.outputs.token }}
+          AC_TASK_ID: ${{ inputs.ac_task_id }}
+          EXPECTED_STATUS_ID: ${{ inputs.expected_status_id }}
+        run: |
+          set -euo pipefail
+
+          echo "Reading ActiveControl Business Task..."
+          echo "Task ID: $AC_TASK_ID"
+          echo "Expected deploymentStatus.statusId: $EXPECTED_STATUS_ID"
+
+          RESPONSE=$(curl -sS -w "\n%{http_code}" \
+            -X GET "$AC_BASE_URL/api/tasks/$AC_TASK_ID" \
+            -H "Accept: application/json" \
+            -H "Cookie: wp-access-token=$AC_TOKEN" \
+            -H "Authorization: Bearer $AC_TOKEN")
+
+          BODY=$(echo "$RESPONSE" | sed '$d')
+          STATUS=$(echo "$RESPONSE" | tail -n1)
+
+          echo "GET Task HTTP Status: $STATUS"
+
+          if [[ "$STATUS" -lt 200 || "$STATUS" -ge 300 ]]; then
+            echo "❌ Could not read ActiveControl task"
+            echo "$BODY" | jq . || echo "$BODY"
+            exit 1
+          fi
+
+          echo "$BODY" > task.json
+
+          echo "Task response preview:"
+          jq '{
+            id: (.task.id // .id),
+            caption: (.task.caption // .caption),
+            reference: (.task.reference // .reference),
+            deploymentStatus: (.task.deploymentStatus // .deploymentStatus),
+            planningStatus: (.task.planningStatus // .planningStatus),
+            testingStatus: (.task.testingStatus // .testingStatus),
+            description: (.task.description // .description)
+          }' task.json
+
+          TASK_ID=$(jq -r '.task.id // .id // empty' task.json)
+          CAPTION=$(jq -r '.task.caption // .caption // empty' task.json)
+          REFERENCE=$(jq -r '.task.reference // .reference // empty' task.json)
+          DESCRIPTION=$(jq -r '.task.description // .description // empty' task.json)
+
+          DEPLOYMENT_STATUS_ID=$(jq -r '.task.deploymentStatus.statusId // .deploymentStatus.statusId // empty' task.json)
+          DEPLOYMENT_STATUS_CAPTION=$(jq -r '.task.deploymentStatus.caption // .deploymentStatus.caption // empty' task.json)
+
+          PLANNING_STATUS_ID=$(jq -r '.task.planningStatus.statusId // .planningStatus.statusId // empty' task.json)
+          PLANNING_STATUS_CAPTION=$(jq -r '.task.planningStatus.caption // .planningStatus.caption // empty' task.json)
+
+          TESTING_STATUS_ID=$(jq -r '.task.testingStatus.id // .testingStatus.id // empty' task.json)
+          TESTING_STATUS_CAPTION=$(jq -r '.task.testingStatus.caption // .testingStatus.caption // empty' task.json)
+
+          # These are optional; they are useful later when we trigger the deploy.
+          PACKAGE_ID=$(echo "$DESCRIPTION" | sed -n 's/.*Package=\([^,]*\).*/\1/p' | xargs || true)
+          TARGET_ENV=$(echo "$DESCRIPTION" | sed -n 's/.*Target=\([^,]*\).*/\1/p' | xargs || true)
+          GIT_COMMIT=$(echo "$DESCRIPTION" | sed -n 's/.*Commit=\([0-9a-fA-F]\{40\}\).*/\1/p' | xargs || true)
+
+          if [[ -z "$TARGET_ENV" ]]; then
+            TARGET_ENV="TST"
+          fi
+
+          MATCH="false"
+          if [[ "$DEPLOYMENT_STATUS_ID" == "$EXPECTED_STATUS_ID" ]]; then
+            MATCH="true"
+          fi
+
+          echo "task_id=$TASK_ID" >> "$GITHUB_OUTPUT"
+          echo "caption=$CAPTION" >> "$GITHUB_OUTPUT"
+          echo "reference=$REFERENCE" >> "$GITHUB_OUTPUT"
+          echo "deployment_status_id=$DEPLOYMENT_STATUS_ID" >> "$GITHUB_OUTPUT"
+          echo "deployment_status_caption=$DEPLOYMENT_STATUS_CAPTION" >> "$GITHUB_OUTPUT"
+          echo "planning_status_id=$PLANNING_STATUS_ID" >> "$GITHUB_OUTPUT"
+          echo "planning_status_caption=$PLANNING_STATUS_CAPTION" >> "$GITHUB_OUTPUT"
+          echo "testing_status_id=$TESTING_STATUS_ID" >> "$GITHUB_OUTPUT"
+          echo "testing_status_caption=$TESTING_STATUS_CAPTION" >> "$GITHUB_OUTPUT"
+          echo "package_id=$PACKAGE_ID" >> "$GITHUB_OUTPUT"
+          echo "target_env=$TARGET_ENV" >> "$GITHUB_OUTPUT"
+          echo "git_commit=$GIT_COMMIT" >> "$GITHUB_OUTPUT"
+          echo "match=$MATCH" >> "$GITHUB_OUTPUT"
+
+          echo "Deployment Status ID      : $DEPLOYMENT_STATUS_ID"
+          echo "Deployment Status Caption : $DEPLOYMENT_STATUS_CAPTION"
+          echo "Expected Status ID        : $EXPECTED_STATUS_ID"
+          echo "Status Match              : $MATCH"
+          echo "Package                   : $PACKAGE_ID"
+          echo "Target                    : $TARGET_ENV"
+          echo "Git Commit                : $GIT_COMMIT"
+
+      - name: Optional trigger deploy via repository_dispatch
+        if: ${{ steps.read_task.outputs.match == 'true' && inputs.trigger_deploy == 'true' }}
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          AC_SHARED_SECRET: ${{ secrets.AC_SHARED_SECRET }}
+          AC_TASK_ID: ${{ steps.read_task.outputs.task_id }}
+          PACKAGE_ID: ${{ steps.read_task.outputs.package_id }}
+          TARGET_ENV: ${{ steps.read_task.outputs.target_env }}
+          GIT_COMMIT: ${{ steps.read_task.outputs.git_commit }}
+        run: |
+          set -euo pipefail
+
+          echo "Status matched and trigger_deploy=true."
+          echo "Dispatching AC Callback Deploy workflow..."
+
+          if [[ -z "$PACKAGE_ID" ]]; then
+            echo "❌ Cannot dispatch: package_id could not be extracted from BT description"
+            exit 1
+          fi
+
+          if [[ -z "$GIT_COMMIT" ]]; then
+            echo "❌ Cannot dispatch: git_commit could not be extracted from BT description"
+            exit 1
+          fi
+
+          if [[ -z "$AC_SHARED_SECRET" ]]; then
+            echo "❌ Cannot dispatch: AC_SHARED_SECRET is not configured"
+            exit 1
+          fi
+
+          DISPATCH_PAYLOAD=$(jq -n \
+            --arg package_id "$PACKAGE_ID" \
+            --arg target_env "$TARGET_ENV" \
+            --arg git_commit "$GIT_COMMIT" \
+            --arg ac_task_id "$AC_TASK_ID" \
+            --arg secret "$AC_SHARED_SECRET" \
+            '{
+              event_type: "ac-import-success",
+              client_payload: {
+                package_id: $package_id,
+                target_env: $target_env,
+                git_commit: $git_commit,
+                ac_task_id: $ac_task_id,
+                secret: $secret
+              }
+            }')
+
+          RESPONSE=$(curl -sS -w "\n%{http_code}" \
+            -X POST "https://api.github.com/repos/$GITHUB_REPOSITORY/dispatches" \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer $GITHUB_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "$DISPATCH_PAYLOAD")
+
+          BODY=$(echo "$RESPONSE" | sed '$d')
+          STATUS=$(echo "$RESPONSE" | tail -n1)
+
+          echo "repository_dispatch HTTP Status: $STATUS"
+
+          if [[ "$STATUS" -ne 204 ]]; then
+            echo "❌ repository_dispatch failed"
+            echo "$BODY" | jq . || echo "$BODY"
+            exit 1
+          fi
+
+          echo "✅ AC Callback Deploy workflow dispatched"
+
+      - name: Summary
+        shell: bash
+        run: |
+          echo "## ActiveControl One Task Poll" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Field | Value |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Task ID | \`${{ steps.read_task.outputs.task_id }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Caption | \`${{ steps.read_task.outputs.caption }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Reference | \`${{ steps.read_task.outputs.reference }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Deployment Status ID | \`${{ steps.read_task.outputs.deployment_status_id }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Deployment Status Caption | \`${{ steps.read_task.outputs.deployment_status_caption }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Expected Status ID | \`${{ inputs.expected_status_id }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Status Match | \`${{ steps.read_task.outputs.match }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Package | \`${{ steps.read_task.outputs.package_id }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Target | \`${{ steps.read_task.outputs.target_env }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Git Commit | \`${{ steps.read_task.outputs.git_commit }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Trigger Deploy | \`${{ inputs.trigger_deploy }}\` |" >> "$GITHUB_STEP_SUMMARY"
