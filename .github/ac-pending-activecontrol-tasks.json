@@ -1,0 +1,11 @@
+[
+  {
+    "task_id": "10026070200000387421",
+    "package_id": "Final1",
+    "source_env": "DEV",
+    "target_env": "TST",
+    "git_commit": "89050ced4037b9786876dd15540f1af4f2b0c509",
+    "github_run_id": "28612238303",
+    "repository": "BasisTest/cicd-intsuite"
+  }
+]
