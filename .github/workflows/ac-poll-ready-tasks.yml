@@ -1,0 +1,333 @@
+name: AC - Poll Ready GitHub Business Tasks
+
+on:
+  workflow_dispatch:
+    inputs:
+      expected_status_id:
+        description: "Deployment status ID that allows deploy"
+        required: true
+        type: string
+        default: "10015010200000143250"
+      trigger_deploy:
+        description: "Trigger deploy for matching tasks?"
+        required: true
+        type: choice
+        default: "false"
+        options:
+          - "false"
+          - "true"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ac-poll-ready-tasks
+  cancel-in-progress: false
+
+jobs:
+  poll-ready-tasks:
+    name: Poll Ready ActiveControl Tasks
+    runs-on: ${{ vars.RUNS_ON && fromJson(vars.RUNS_ON) || 'ubuntu-latest' }}
+
+    steps:
+      - name: Checkout main branch
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Login to ActiveControl
+        id: ac_login
+        shell: bash
+        env:
+          AC_BASE_URL: ${{ vars.AC_BASE_URL }}
+          AC_LOGIN_ENDPOINT: ${{ vars.AC_LOGIN_ENDPOINT }}
+          AC_SYSTEM: ${{ vars.AC_SYSTEM }}
+          AC_USERNAME: ${{ secrets.AC_USERNAME }}
+          AC_PASSWORD: ${{ secrets.AC_PASSWORD }}
+        run: |
+          set -euo pipefail
+
+          echo "Logging in to ActiveControl..."
+
+          LOGIN_PAYLOAD=$(jq -n \
+            --arg username "$AC_USERNAME" \
+            --arg password "$AC_PASSWORD" \
+            --arg system "$AC_SYSTEM" \
+            '{
+              system: $system,
+              username: $username,
+              password: $password,
+              pwIsNotEncoded: true,
+              scopes: ["string"],
+              sessionDurationInSec: 0
+            }')
+
+          RESPONSE=$(curl -sS -w "\n%{http_code}" \
+            -X POST "$AC_BASE_URL$AC_LOGIN_ENDPOINT" \
+            -H "Accept: application/json" \
+            -H "Content-Type: application/json" \
+            -d "$LOGIN_PAYLOAD")
+
+          BODY=$(echo "$RESPONSE" | sed '$d')
+          STATUS=$(echo "$RESPONSE" | tail -n1)
+
+          echo "Login HTTP Status: $STATUS"
+
+          if [[ "$STATUS" -lt 200 || "$STATUS" -ge 300 ]]; then
+            echo "❌ ActiveControl login failed"
+            echo "$BODY" | jq . || echo "$BODY"
+            exit 1
+          fi
+
+          TOKEN=$(echo "$BODY" | jq -r '.access_token // empty')
+
+          if [[ -z "$TOKEN" || "$TOKEN" == "null" ]]; then
+            echo "❌ No access_token found"
+            echo "$BODY" | jq . || echo "$BODY"
+            exit 1
+          fi
+
+          echo "::add-mask::$TOKEN"
+          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
+
+      - name: Poll pending tasks and dispatch matching ones
+        id: poll
+        shell: bash
+        env:
+          AC_BASE_URL: ${{ vars.AC_BASE_URL }}
+          AC_TOKEN: ${{ steps.ac_login.outputs.token }}
+          EXPECTED_STATUS_ID: ${{ inputs.expected_status_id }}
+          TRIGGER_DEPLOY: ${{ inputs.trigger_deploy }}
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          AC_SHARED_SECRET: ${{ secrets.AC_SHARED_SECRET }}
+        run: |
+          set -euo pipefail
+
+          FILE=".github/ac-pending-activecontrol-tasks.json"
+
+          if [[ ! -f "$FILE" ]]; then
+            echo "No pending ActiveControl task registry found."
+            echo "[]" > "$FILE"
+          fi
+
+          echo "Pending registry before polling:"
+          cat "$FILE" | jq .
+
+          REMAINING_FILE="$(mktemp)"
+          echo "[]" > "$REMAINING_FILE"
+
+          MATCHED_COUNT=0
+          DISPATCHED_COUNT=0
+          NOT_READY_COUNT=0
+          ERROR_COUNT=0
+
+          echo "## ActiveControl Ready Task Poll" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Task ID | Status ID | Status | Package | Target | Commit | Action |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---|---|---|---|---|---|" >> "$GITHUB_STEP_SUMMARY"
+
+          TASK_COUNT=$(jq 'length' "$FILE")
+
+          if [[ "$TASK_COUNT" -eq 0 ]]; then
+            echo "No pending ActiveControl tasks."
+            echo "No pending ActiveControl tasks." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          for i in $(seq 0 $((TASK_COUNT - 1))); do
+            TASK_ID=$(jq -r ".[$i].task_id" "$FILE")
+            PACKAGE_ID=$(jq -r ".[$i].package_id" "$FILE")
+            TARGET_ENV=$(jq -r ".[$i].target_env" "$FILE")
+            GIT_COMMIT=$(jq -r ".[$i].git_commit" "$FILE")
+            REPOSITORY=$(jq -r ".[$i].repository // \"$GITHUB_REPOSITORY\"" "$FILE")
+
+            echo ""
+            echo "Checking ActiveControl BT: $TASK_ID"
+
+            RESPONSE=$(curl -sS -w "\n%{http_code}" \
+              -X GET "$AC_BASE_URL/api/tasks/$TASK_ID" \
+              -H "Accept: application/json" \
+              -H "Cookie: wp-access-token=$AC_TOKEN" \
+              -H "Authorization: Bearer $AC_TOKEN")
+
+            BODY=$(echo "$RESPONSE" | sed '$d')
+            HTTP_STATUS=$(echo "$RESPONSE" | tail -n1)
+
+            if [[ "$HTTP_STATUS" -lt 200 || "$HTTP_STATUS" -ge 300 ]]; then
+              echo "❌ Failed to read task $TASK_ID. Keeping pending."
+              echo "$BODY" | jq . || echo "$BODY"
+
+              ERROR_COUNT=$((ERROR_COUNT + 1))
+
+              jq \
+                --argjson item "$(jq ".[$i]" "$FILE")" \
+                '. + [$item]' "$REMAINING_FILE" > "$REMAINING_FILE.tmp"
+              mv "$REMAINING_FILE.tmp" "$REMAINING_FILE"
+
+              echo "| $TASK_ID | HTTP_$HTTP_STATUS | read failed | $PACKAGE_ID | $TARGET_ENV | $GIT_COMMIT | kept pending |" >> "$GITHUB_STEP_SUMMARY"
+              continue
+            fi
+
+            echo "$BODY" > "task-$TASK_ID.json"
+
+            CURRENT_STATUS_ID=$(jq -r '.task.deploymentStatus.statusId // .deploymentStatus.statusId // empty' "task-$TASK_ID.json")
+            CURRENT_STATUS_CAPTION=$(jq -r '.task.deploymentStatus.caption // .deploymentStatus.caption // empty' "task-$TASK_ID.json")
+            REFERENCE=$(jq -r '.task.reference // .reference // empty' "task-$TASK_ID.json")
+            DESCRIPTION=$(jq -r '.task.description // .description // empty' "task-$TASK_ID.json")
+
+            echo "Reference: $REFERENCE"
+            echo "Current deployment status: $CURRENT_STATUS_ID ($CURRENT_STATUS_CAPTION)"
+            echo "Expected deployment status: $EXPECTED_STATUS_ID"
+
+            # Extra safety: confirm this looks like a GitHub-created task.
+            IS_GITHUB_TASK="false"
+
+            if [[ "$REFERENCE" == GH-* ]]; then
+              IS_GITHUB_TASK="true"
+            fi
+
+            if echo "$DESCRIPTION" | grep -q "Repo=$GITHUB_REPOSITORY"; then
+              IS_GITHUB_TASK="true"
+            fi
+
+            if [[ "$IS_GITHUB_TASK" != "true" ]]; then
+              echo "Task $TASK_ID does not look like a GitHub-created CPI task. Keeping pending but not dispatching."
+
+              NOT_READY_COUNT=$((NOT_READY_COUNT + 1))
+
+              jq \
+                --argjson item "$(jq ".[$i]" "$FILE")" \
+                '. + [$item]' "$REMAINING_FILE" > "$REMAINING_FILE.tmp"
+              mv "$REMAINING_FILE.tmp" "$REMAINING_FILE"
+
+              echo "| $TASK_ID | $CURRENT_STATUS_ID | $CURRENT_STATUS_CAPTION | $PACKAGE_ID | $TARGET_ENV | $GIT_COMMIT | not GitHub task |" >> "$GITHUB_STEP_SUMMARY"
+              continue
+            fi
+
+            if [[ "$CURRENT_STATUS_ID" != "$EXPECTED_STATUS_ID" ]]; then
+              echo "Task $TASK_ID not ready yet."
+
+              NOT_READY_COUNT=$((NOT_READY_COUNT + 1))
+
+              jq \
+                --argjson item "$(jq ".[$i]" "$FILE")" \
+                '. + [$item]' "$REMAINING_FILE" > "$REMAINING_FILE.tmp"
+              mv "$REMAINING_FILE.tmp" "$REMAINING_FILE"
+
+              echo "| $TASK_ID | $CURRENT_STATUS_ID | $CURRENT_STATUS_CAPTION | $PACKAGE_ID | $TARGET_ENV | $GIT_COMMIT | not ready |" >> "$GITHUB_STEP_SUMMARY"
+              continue
+            fi
+
+            MATCHED_COUNT=$((MATCHED_COUNT + 1))
+
+            echo "✅ Task $TASK_ID matched expected status."
+
+            if [[ "$TRIGGER_DEPLOY" != "true" ]]; then
+              echo "trigger_deploy=false, not dispatching. Keeping task pending."
+
+              jq \
+                --argjson item "$(jq ".[$i]" "$FILE")" \
+                '. + [$item]' "$REMAINING_FILE" > "$REMAINING_FILE.tmp"
+              mv "$REMAINING_FILE.tmp" "$REMAINING_FILE"
+
+              echo "| $TASK_ID | $CURRENT_STATUS_ID | $CURRENT_STATUS_CAPTION | $PACKAGE_ID | $TARGET_ENV | $GIT_COMMIT | dry-run match |" >> "$GITHUB_STEP_SUMMARY"
+              continue
+            fi
+
+            if [[ -z "$PACKAGE_ID" || "$PACKAGE_ID" == "null" ]]; then
+              echo "❌ Missing package_id in registry for $TASK_ID"
+              ERROR_COUNT=$((ERROR_COUNT + 1))
+              echo "| $TASK_ID | $CURRENT_STATUS_ID | $CURRENT_STATUS_CAPTION | - | $TARGET_ENV | $GIT_COMMIT | missing package |" >> "$GITHUB_STEP_SUMMARY"
+              continue
+            fi
+
+            if [[ -z "$GIT_COMMIT" || "$GIT_COMMIT" == "null" ]]; then
+              echo "❌ Missing git_commit in registry for $TASK_ID"
+              ERROR_COUNT=$((ERROR_COUNT + 1))
+              echo "| $TASK_ID | $CURRENT_STATUS_ID | $CURRENT_STATUS_CAPTION | $PACKAGE_ID | $TARGET_ENV | - | missing commit |" >> "$GITHUB_STEP_SUMMARY"
+              continue
+            fi
+
+            DISPATCH_PAYLOAD=$(jq -n \
+              --arg package_id "$PACKAGE_ID" \
+              --arg target_env "$TARGET_ENV" \
+              --arg git_commit "$GIT_COMMIT" \
+              --arg ac_task_id "$TASK_ID" \
+              --arg secret "$AC_SHARED_SECRET" \
+              '{
+                event_type: "ac-import-success",
+                client_payload: {
+                  package_id: $package_id,
+                  target_env: $target_env,
+                  git_commit: $git_commit,
+                  ac_task_id: $ac_task_id,
+                  secret: $secret
+                }
+              }')
+
+            echo "Dispatching deploy workflow for task $TASK_ID..."
+
+            DISPATCH_RESPONSE=$(curl -sS -w "\n%{http_code}" \
+              -X POST "https://api.github.com/repos/$GITHUB_REPOSITORY/dispatches" \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer $GITHUB_TOKEN" \
+              -H "Content-Type: application/json" \
+              -d "$DISPATCH_PAYLOAD")
+
+            DISPATCH_BODY=$(echo "$DISPATCH_RESPONSE" | sed '$d')
+            DISPATCH_STATUS=$(echo "$DISPATCH_RESPONSE" | tail -n1)
+
+            echo "Dispatch HTTP status: $DISPATCH_STATUS"
+
+            if [[ "$DISPATCH_STATUS" -ne 204 ]]; then
+              echo "❌ Dispatch failed. Keeping task pending."
+              echo "$DISPATCH_BODY" | jq . || echo "$DISPATCH_BODY"
+
+              ERROR_COUNT=$((ERROR_COUNT + 1))
+
+              jq \
+                --argjson item "$(jq ".[$i]" "$FILE")" \
+                '. + [$item]' "$REMAINING_FILE" > "$REMAINING_FILE.tmp"
+              mv "$REMAINING_FILE.tmp" "$REMAINING_FILE"
+
+              echo "| $TASK_ID | $CURRENT_STATUS_ID | $CURRENT_STATUS_CAPTION | $PACKAGE_ID | $TARGET_ENV | $GIT_COMMIT | dispatch failed |" >> "$GITHUB_STEP_SUMMARY"
+              continue
+            fi
+
+            DISPATCHED_COUNT=$((DISPATCHED_COUNT + 1))
+            echo "✅ Dispatch sent. Removing task $TASK_ID from pending registry."
+            echo "| $TASK_ID | $CURRENT_STATUS_ID | $CURRENT_STATUS_CAPTION | $PACKAGE_ID | $TARGET_ENV | $GIT_COMMIT | dispatched |" >> "$GITHUB_STEP_SUMMARY"
+          done
+
+          mv "$REMAINING_FILE" "$FILE"
+
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Matched tasks: $MATCHED_COUNT" >> "$GITHUB_STEP_SUMMARY"
+          echo "Dispatched deploys: $DISPATCHED_COUNT" >> "$GITHUB_STEP_SUMMARY"
+          echo "Not ready: $NOT_READY_COUNT" >> "$GITHUB_STEP_SUMMARY"
+          echo "Errors: $ERROR_COUNT" >> "$GITHUB_STEP_SUMMARY"
+
+          echo "matched_count=$MATCHED_COUNT" >> "$GITHUB_OUTPUT"
+          echo "dispatched_count=$DISPATCHED_COUNT" >> "$GITHUB_OUTPUT"
+          echo "not_ready_count=$NOT_READY_COUNT" >> "$GITHUB_OUTPUT"
+          echo "error_count=$ERROR_COUNT" >> "$GITHUB_OUTPUT"
+
+      - name: Commit updated pending registry
+        if: ${{ inputs.trigger_deploy == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git add .github/ac-pending-activecontrol-tasks.json
+
+          if git diff --cached --quiet; then
+            echo "No registry changes to commit."
+            exit 0
+          fi
+
+          git commit -m "chore: update pending ActiveControl tasks [skip ci]"
+          git push
