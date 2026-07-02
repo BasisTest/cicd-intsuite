@@ -147,6 +147,91 @@ jobs:
       target_env: TST
       git_commit: ${{ needs.resolve-development-commit.outputs.git_commit }}
     secrets: inherit
+
+  register-pending-activecontrol-task:
+    needs: [resolve-development-commit, create-activecontrol-task]
+    name: Register Pending ActiveControl Task
+    runs-on: ${{ vars.RUNS_ON && fromJson(vars.RUNS_ON) || 'ubuntu-latest' }}
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout main branch
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Register pending AC task
+        shell: bash
+        env:
+          TASK_ID: ${{ needs.create-activecontrol-task.outputs.task_id }}
+          PACKAGE_ID: ${{ inputs.id }}
+          SOURCE_ENV: DEV
+          TARGET_ENV: TST
+          GIT_COMMIT: ${{ needs.resolve-development-commit.outputs.git_commit }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          FILE=".github/ac-pending-activecontrol-tasks.json"
+
+          mkdir -p .github
+
+          if [[ ! -f "$FILE" ]]; then
+            echo "[]" > "$FILE"
+          fi
+
+          if [[ -z "$TASK_ID" || "$TASK_ID" == "null" ]]; then
+            echo "❌ No task_id returned from ActiveControl task creation"
+            exit 1
+          fi
+
+          TMP_FILE="$(mktemp)"
+
+          jq \
+            --arg task_id "$TASK_ID" \
+            --arg package_id "$PACKAGE_ID" \
+            --arg source_env "$SOURCE_ENV" \
+            --arg target_env "$TARGET_ENV" \
+            --arg git_commit "$GIT_COMMIT" \
+            --arg github_run_id "$GITHUB_RUN_ID" \
+            --arg repository "$GITHUB_REPOSITORY" \
+            '
+            map(select(.task_id != $task_id)) +
+            [{
+              task_id: $task_id,
+              package_id: $package_id,
+              source_env: $source_env,
+              target_env: $target_env,
+              git_commit: $git_commit,
+              github_run_id: $github_run_id,
+              repository: $repository
+            }]
+            ' "$FILE" > "$TMP_FILE"
+
+          mv "$TMP_FILE" "$FILE"
+
+          echo "Pending AC task registry:"
+          cat "$FILE" | jq .
+
+      - name: Commit pending task registry
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git add .github/ac-pending-activecontrol-tasks.json
+
+          if git diff --cached --quiet; then
+            echo "No pending registry changes to commit."
+            exit 0
+          fi
+
+          git commit -m "chore: register pending ActiveControl task [skip ci]"
+          git push
   # ── END CUSTOM ────────────────────────────────────────────────────────────────
 
   # TST-Deploy vorerst deaktiviert (if: false).
