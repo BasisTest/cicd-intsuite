@@ -7,5 +7,14 @@
     "git_commit": "9c8bdcc5530bf9746391abceee499fabc0cb5e64",
     "github_run_id": "28657003071",
     "repository": "BasisTest/cicd-intsuite"
+  },
+  {
+    "task_id": "10026070300000387453",
+    "package_id": "Final1",
+    "source_env": "DEV",
+    "target_env": "TST",
+    "git_commit": "33dd96fca8df42700dad407ba366b95ba86d623c",
+    "github_run_id": "28657304490",
+    "repository": "BasisTest/cicd-intsuite"
   }
 ]
