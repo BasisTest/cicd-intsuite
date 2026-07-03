@@ -13,6 +13,10 @@
 #                       DEV CPI -> Git -> AC BT -> Pending Registry.
 #                       Direct TST deploy disabled until AC polling/approval.
 #                       (A. Yildirim / BasisTest)
+# 1.6.2 - 2026-07-03 - Dedup-Schutz: BT wird nur erstellt wenn development-HEAD
+#                       sich durch den Download tatsaechlich geaendert hat
+#                       (SHA-Vergleich vor/nach Download, kein Fork-Patch noetig).
+#                       (A. Yildirim / BasisTest)
 
 name: (Dev) BTP Download to GIT and Upload/Deploy to TST
 
@@ -85,8 +89,32 @@ jobs:
           echo "btp-api-url=${{ vars.BTP_API_URL }}" >> $GITHUB_OUTPUT
           echo "git-cicd-orgrepo=${{ vars.GIT_CICD_ORGREPO }}" >> $GITHUB_OUTPUT
 
+  # ── NEU: development-HEAD VOR dem Download festhalten ───────────────────────
+  # Laeuft parallel zu initialize, braucht keine BTP-Auth - nur ein Checkout.
+  # Muss abgeschlossen sein, bevor btp-download-btp startet (siehe dessen needs).
+  resolve-development-commit-before:
+    name: Resolve Development Commit (before download)
+    runs-on: ${{ vars.RUNS_ON && fromJson(vars.RUNS_ON) || 'ubuntu-latest' }}
+    outputs:
+      git_commit_before: ${{ steps.resolve.outputs.git_commit }}
+    steps:
+      - name: Checkout development branch
+        uses: actions/checkout@v4
+        with:
+          ref: development
+          fetch-depth: 1
+
+      - name: Resolve commit before download
+        id: resolve
+        shell: bash
+        run: |
+          set -euo pipefail
+          SHA=$(git rev-parse HEAD)
+          echo "development HEAD vor Download: $SHA"
+          echo "git_commit=$SHA" >> "$GITHUB_OUTPUT"
+
   btp-download-btp:
-    needs: initialize
+    needs: [initialize, resolve-development-commit-before]
     name: Download ${{ inputs.mode }}
     uses: BasisTest/cicd-actions-for-sap-integration-suite/.github/workflows/download-btp-to-git.yml@v1.3.0-artifact-v4-patch
     with:
@@ -107,7 +135,7 @@ jobs:
       GIT_CICD_TOKEN: ${{ secrets.GIT_CICD_TOKEN }}
       GIT_CICD_APP_PRIVATE_KEY: ${{ secrets.GIT_CICD_APP_PRIVATE_KEY }}
 
-  # ── CUSTOM: Resolve Git Commit after DEV -> Git Sync ────────────────────────
+  # ── CUSTOM: Resolve Git Commit NACH DEV -> Git Sync (unveraendert) ──────────
   resolve-development-commit:
     needs: [btp-download-btp]
     name: Resolve Development Commit
@@ -133,8 +161,13 @@ jobs:
           echo "git_commit=$SHA" >> "$GITHUB_OUTPUT"
 
   # ── CUSTOM: Create ActiveControl Business Task ──────────────────────────────
+  # NEU: if-Bedingung - nur wenn development-HEAD sich durch den Download
+  # tatsaechlich geaendert hat (git-commit im SAP-Framework hat committed).
+  # Identisch/before == after -> git-commit hatte "No changes to commit" ->
+  # kein neuer Commit -> keine neue BT.
   create-activecontrol-task:
-    needs: [resolve-development-commit]
+    needs: [resolve-development-commit-before, resolve-development-commit]
+    if: needs.resolve-development-commit-before.outputs.git_commit_before != needs.resolve-development-commit.outputs.git_commit
     name: Create ActiveControl Business Task
     uses: ./.github/workflows/ac-create-task-test.yml
     with:
@@ -144,7 +177,10 @@ jobs:
       git_commit: ${{ needs.resolve-development-commit.outputs.git_commit }}
     secrets: inherit
 
-  # ── CUSTOM: Register GitHub-created BT as Pending ───────────────────────────
+  # ── CUSTOM: Register GitHub-created BT as Pending (unveraendert) ────────────
+  # Wird automatisch mitgeskippt, wenn create-activecontrol-task uebersprungen
+  # wurde (Skip-Propagation ueber needs, gleiches Prinzip wie bei
+  # read-env-vars-tst / btp-process-id weiter unten).
   register-pending-activecontrol-task:
     needs: [resolve-development-commit, create-activecontrol-task]
     name: Register Pending ActiveControl Task
