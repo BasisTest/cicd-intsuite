@@ -1,0 +1,19 @@
+﻿# Project configuration
+general:
+  cpiApiServiceKeyCredentialsId: "cpi-api"
+  integrationFlowId: "AY14"
+
+# Stage configuration
+stages:
+  uploadStage:
+    enabled: true
+  deployStage:
+    enabled: true
+  integrationTestStage:
+    enabled: false
+
+# Step configuration
+steps:
+  integrationArtifactUpload:
+    packageId: "Final1"
+    integrationFlowName: "AY14"
