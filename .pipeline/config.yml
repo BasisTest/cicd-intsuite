@@ -17,3 +17,4 @@ steps:
   integrationArtifactUpload:
     packageId: "Final1"
     integrationFlowName: "AY14"
+    filePath: "sap-cicd-poc/AY14.zip"
