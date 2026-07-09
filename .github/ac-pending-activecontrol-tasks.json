@@ -1,11 +1,1 @@
-[
-  {
-    "task_id": "10026070900000387574",
-    "package_id": "Final1",
-    "source_env": "DEV",
-    "target_env": "TST",
-    "git_commit": "d1d16803b492f5e818fd7c909ba092bb873c698d",
-    "github_run_id": "29004811426",
-    "repository": "BasisTest/cicd-intsuite"
-  }
-]
+[]
