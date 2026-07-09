@@ -17,6 +17,21 @@
             }
           }
         ]
+      },
+      {
+        "ArtifactID": "AY15",
+        "ArtifactName": "AY15",
+        "ArtifactType": "INTEGRATION_FLOW",
+        "Parameters": [
+          {
+            "DataType": "xsd:string",
+            "Description": null,
+            "ParameterKey": "SAP_ProfileId",
+            "ParameterValues": {
+              "Default": "iflmap"
+            }
+          }
+        ]
       }
     ]
   }
