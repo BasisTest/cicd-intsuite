@@ -7,5 +7,5 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - name: Test
+      - name: Confirm trigger
         run: echo "Triggered successfully"
