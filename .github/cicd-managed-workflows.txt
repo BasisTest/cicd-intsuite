@@ -1,5 +1,5 @@
 # SAP CICD managed workflow files — do not edit manually
-# Updated: 2026-11-17T08:42:34Z
+# Updated: 2026-11-18T08:06:06Z
 btp-delete-from-btp-and-git.yml
 btp-deploy-delete.yml
 btp-download-to-git.yml
